@@ -1,18 +1,18 @@
 package com.johnymuffin.beta.legacyminecraft.pinger;
 
-import com.johnymuffin.beta.legacyminecraft.pinger.config.ConfigurationFile;
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.johnymuffin.beta.legacyminecraft.pinger.config.JSONConfiguration;
-import com.johnymuffin.beta.legacyminecraft.pinger.config.YMLConfiguration;
-import org.bukkit.Bukkit;
-import org.bukkit.entity.Player;
-import org.bukkit.plugin.PluginDescriptionFile;
-import org.bukkit.plugin.java.JavaPlugin;
-import org.json.simple.JSONArray;
-import org.json.simple.JSONObject;
-import org.json.simple.parser.JSONParser;
+import net.md_5.bungee.BungeeCord;
+import net.md_5.bungee.api.connection.ProxiedPlayer;
+import net.md_5.bungee.api.plugin.Plugin;
+import net.md_5.bungee.api.plugin.PluginDescription;
+import net.md_5.bungee.api.scheduler.ScheduledTask;
 
 import javax.imageio.ImageIO;
-import javax.xml.bind.DatatypeConverter;
 import java.awt.image.BufferedImage;
 import java.io.*;
 import java.net.HttpURLConnection;
@@ -20,44 +20,34 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
-import java.util.logging.Logger;
 
-public class LegacyMinecraftPinger extends JavaPlugin {
+public class LegacyMinecraftPinger extends Plugin {
     //Basic Plugin Info
     private static LegacyMinecraftPinger plugin;
-    private Logger log;
     private String pluginName;
-    private PluginDescriptionFile pdf;
-    private Integer taskID;
+    private PluginDescription pdf;
+    private ScheduledTask task;
     private String serverIcon;
+    private Gson gson;
 
-    private ConfigurationFile LMPConfig;
+    private JSONConfiguration LMPConfig;
 
     private boolean firstPing = true;
 
     @Override
     public void onEnable() {
         plugin = this;
-        log = this.getServer().getLogger();
         pdf = this.getDescription();
         pluginName = pdf.getName();
-        log.info("[" + pluginName + "] Is Loading, Version: " + pdf.getVersion());
+        gson = new GsonBuilder().setLenient().disableHtmlEscaping().create();
+        logger(Level.INFO, "Is Loading, Version: " + pdf.getVersion());
 
         //Generate Config
-        File configFile;
-        boolean newConfig;
-        try {
-            configFile = new File(this.getDataFolder(), "config.yml");
-            newConfig = !configFile.exists();
-            LMPConfig = new YMLConfiguration(configFile);
-        } catch (Exception exception) {
-            logger(Level.WARNING, "YML Configuration file mode failed. Falling back to JSON.");
-            exception.printStackTrace();
-            configFile = new File(this.getDataFolder(), "config.json");
-            newConfig = !configFile.exists();
-            LMPConfig = new JSONConfiguration(configFile);
-        }
+        File configFile = new File(this.getDataFolder(), "config.json");
+        boolean newConfig = !configFile.exists();
+        LMPConfig = new JSONConfiguration(configFile);
 
         LMPConfig.load();
 
@@ -67,11 +57,11 @@ public class LegacyMinecraftPinger extends JavaPlugin {
         LMPConfig.generateConfigOption("description", "My server is pretty nice, you should check it out!");
         LMPConfig.generateConfigOption("version", "B1.7.3");
         LMPConfig.generateConfigOption("serverIP", "mc.retromc.org");
-        LMPConfig.generateConfigOption("serverPort", Bukkit.getServer().getPort());
-        LMPConfig.generateConfigOption("onlineMode", Bukkit.getServer().getOnlineMode());
+        LMPConfig.generateConfigOption("serverPort", 25565);
+        LMPConfig.generateConfigOption("onlineMode", false);
         LMPConfig.generateConfigOption("serverOwner", "ThatGuy");
         LMPConfig.generateConfigOption("pingTime", 45);
-        LMPConfig.generateConfigOption("maxPlayers", Bukkit.getServer().getMaxPlayers());
+        LMPConfig.generateConfigOption("maxPlayers", BungeeCord.getInstance().config.getPlayerLimit());
         LMPConfig.generateConfigOption("key.info", "A key is required if you want to list your server with a image and have it be authenticated. Please contact Johny Muffin#9406 on Discord for a key, or email legacykey@johnymuffin.com to get one.");
         LMPConfig.generateConfigOption("key.value", "");
         LMPConfig.generateConfigOption("debug", false);
@@ -95,7 +85,7 @@ public class LegacyMinecraftPinger extends JavaPlugin {
 
         if (newConfig) {
             logger(Level.WARNING, "Stopping the plugin as the config needs to be set correctly.");
-            Bukkit.getServer().getPluginManager().disablePlugin(this);
+            onDisable();
             return;
         }
 
@@ -110,10 +100,10 @@ public class LegacyMinecraftPinger extends JavaPlugin {
         }
 
 
-        taskID = Bukkit.getServer().getScheduler().scheduleSyncRepeatingTask(plugin, () -> {
-            final String jsonData = generateJsonData().toJSONString();
+        task = getProxy().getScheduler().schedule(plugin, () -> {
+            final String jsonData = gson.toJson(generateJsonData());
             final String apiURL = LMPConfig.getConfigString("url");
-            Bukkit.getServer().getScheduler().scheduleAsyncDelayedTask(plugin, () -> {
+            getProxy().getScheduler().runAsync(plugin, () -> {
                 //Post code directly copied from: https://github.com/codieradical/MineOnlineBroadcast-Bukkit/blob/master/src/MineOnlineBroadcast.java
                 HttpURLConnection connection = null;
                 try {
@@ -139,58 +129,57 @@ public class LegacyMinecraftPinger extends JavaPlugin {
                     }
 
                     try {
-                        JSONParser jsonParser = new JSONParser();
-                        JSONObject jsonResponse = (JSONObject) jsonParser.parse(response.toString());
-                        if (jsonResponse.containsKey("notice")) {
-                            plugin.logger(Level.INFO, "Message from API: " + String.valueOf(jsonResponse.get("notice")));
+                        JsonObject jsonResponse = (JsonObject) JsonParser.parseString(response.toString());
+                        if (jsonResponse.has("notice")) {
+                            logger(Level.INFO, "Message from API: " + jsonResponse.get("notice").getAsString());
                         }
                         //Logic to run on first successful ping.
                         if (firstPing) {
                             //Automatically enforce key if server is authenticated.
-                            if (Boolean.valueOf(String.valueOf(jsonResponse.get("authenticated"))) && !LMPConfig.getConfigBoolean("settings.force-server-uuid.enabled") && LMPConfig.getConfigString("settings.force-server-uuid.value").isEmpty()) {
-                                plugin.logger(Level.INFO, "-------------------[" + plugin.getDescription().getName() + "]-------------------");
-                                plugin.logger(Level.INFO, "Enabling key enforcement as server is authenticated and this can prevent issues if your details every change.\n" +
+                            if (jsonResponse.get("authenticated").getAsBoolean() && !LMPConfig.getConfigBoolean("settings.force-server-uuid.enabled") && LMPConfig.getConfigString("settings.force-server-uuid.value").isEmpty()) {
+                                logger(Level.INFO, "-------------------[" + plugin.getDescription().getName() + "]-------------------");
+                                logger(Level.INFO, "Enabling key enforcement as server is authenticated and this can prevent issues if your details every change.\n" +
                                         "If you ever want to disable this, remove your authentication key, and set uuid override to disabled in the config file then restart.");
-                                UUID serverUUID = UUID.fromString(String.valueOf(jsonResponse.get("uuid")));
+                                UUID serverUUID = UUID.fromString(jsonResponse.get("uuid").getAsString());
                                 LMPConfig.writeConfigOption("settings.force-server-uuid.enabled", true);
                                 LMPConfig.writeConfigOption("settings.force-server-uuid.value", serverUUID.toString());
                                 LMPConfig.writeConfigurationFile();
                                 //Verify UUID incase bad UUID was returned
                                 verifyUUIDString();
-                                plugin.logger(Level.INFO, "-----------------------------------------------");
+                                logger(Level.INFO, "-----------------------------------------------");
                             }
                             firstPing = false;
                         }
 
                         //Allow the API to direct the plugin to set a key. This will be used in the future for automatic verification.
-                        if (jsonResponse.containsKey("newKey")) {
-                            if (Boolean.valueOf(String.valueOf(jsonResponse.get("authenticated")))) {
-                                plugin.logger(Level.INFO, "Your server has been remotely authenticated by the API.");
+                        if (jsonResponse.has("newKey")) {
+                            if (jsonResponse.get("authenticated").getAsBoolean()) {
+                                logger(Level.INFO, "Your server has been remotely authenticated by the API.");
                             }
-                            plugin.logger(Level.INFO, "The API has provided the authentication key" + String.valueOf(jsonResponse.get("newKey")) + ". Automatically setting this key in the config.");
-                            LMPConfig.writeConfigOption("key.value", String.valueOf(jsonResponse.get("newKey")));
+                            logger(Level.INFO, "The API has provided the authentication key" + jsonResponse.get("newKey").getAsString() + ". Automatically setting this key in the config.");
+                            LMPConfig.writeConfigOption("key.value", jsonResponse.get("newKey").getAsString());
                             LMPConfig.writeConfigurationFile();
                         }
 
 
                     } catch (Exception e) {
-                        plugin.logger(Level.INFO, "Malformed JSON response after ping returned normal status code: " + e + ": " + e.getMessage());
+                        logger(Level.INFO, "Malformed JSON response after ping returned normal status code: " + e + ": " + e.getMessage());
                         return;
                     }
 
                     rd.close();
                 } catch (Exception e) {
-                    plugin.logger(Level.WARNING, "An error occurred when attempting to ping: " + e + ": " + e.getMessage());
+                    logger(Level.WARNING, "An error occurred when attempting to ping: " + e + ": " + e.getMessage());
                     if (this.LMPConfig.getConfigBoolean("debug")) {
-                        plugin.logger(Level.WARNING, "Ping Object: " + jsonData);
+                        logger(Level.WARNING, "Ping Object: " + jsonData);
                     }
                 } finally {
                     if (connection != null)
                         connection.disconnect();
                 }
-            }, 0L);
+            });
 
-        }, 20, 20 * Integer.valueOf(String.valueOf(LMPConfig.getConfigOption("pingTime", 45))));
+        }, 20, LMPConfig.getConfigInteger("pingTime"), TimeUnit.SECONDS);
 
 
     }
@@ -213,62 +202,62 @@ public class LegacyMinecraftPinger extends JavaPlugin {
     @Override
     public void onDisable() {
         logger(Level.INFO, "Disabling.");
-        if (taskID != null) {
-            Bukkit.getServer().getScheduler().cancelTask(taskID);
+        if (task != null) {
+            getProxy().getScheduler().cancel(task);
         }
     }
 
     public void logger(Level level, String message) {
-        Bukkit.getServer().getLogger().log(level, "[" + pluginName + "] " + message);
+        getProxy().getLogger().log(level, "[" + pluginName + "] " + message);
     }
 
-    public JSONObject generateJsonData() {
-        JSONObject tmp = new JSONObject();
-        tmp.put("name", LMPConfig.getConfigString("serverName"));
-        tmp.put("description", LMPConfig.getConfigString("description"));
-        tmp.put("version", LMPConfig.getConfigString("version"));
-        tmp.put("ip", LMPConfig.getConfigString("serverIP"));
-        tmp.put("port", LMPConfig.getConfigInteger("serverPort"));
-        tmp.put("onlineMode", LMPConfig.getConfigBoolean("onlineMode"));
-        tmp.put("maxPlayers", LMPConfig.getConfigString("maxPlayers"));
-        tmp.put("key", LMPConfig.getConfigString("key.value"));
-        tmp.put("show-cords", LMPConfig.getConfigBoolean("settings.show-cords.value"));
+    public JsonObject generateJsonData() {
+        JsonObject tmp = new JsonObject();
+        tmp.addProperty("name", LMPConfig.getConfigString("serverName"));
+        tmp.addProperty("description", LMPConfig.getConfigString("description"));
+        tmp.addProperty("version", LMPConfig.getConfigString("version"));
+        tmp.addProperty("ip", LMPConfig.getConfigString("serverIP"));
+        tmp.addProperty("port", LMPConfig.getConfigInteger("serverPort"));
+        tmp.addProperty("onlineMode", LMPConfig.getConfigBoolean("onlineMode"));
+        tmp.addProperty("maxPlayers", LMPConfig.getConfigString("maxPlayers"));
+        tmp.addProperty("key", LMPConfig.getConfigString("key.value"));
+        tmp.addProperty("show-cords", LMPConfig.getConfigBoolean("settings.show-cords.value"));
         if (LMPConfig.getConfigBoolean("settings.force-server-uuid.enabled")) {
-            tmp.put("uuid", UUID.fromString(LMPConfig.getConfigString("settings.force-server-uuid.value")).toString()); //Error out at the server level if UUID is invalid.
+            tmp.addProperty("uuid", UUID.fromString(LMPConfig.getConfigString("settings.force-server-uuid.value")).toString()); //Error out at the server level if UUID is invalid.
         }
 
-        JSONArray playerArray = new JSONArray();
-        for (Player p : Bukkit.getServer().getOnlinePlayers()) {
-            JSONObject playerData = new JSONObject();
-            playerData.put("username", p.getName());
-            playerData.put("uuid", generateOfflineUUID(p.getName()).toString());
-            playerData.put("x", p.getLocation().getX());
-            playerData.put("y", p.getLocation().getY());
-            playerData.put("z", p.getLocation().getZ());
-            playerData.put("world", p.getLocation().getWorld().getName());
+        JsonArray playerArray = new JsonArray();
+        for (ProxiedPlayer p : getProxy().getPlayers()) {
+            JsonObject playerData = new JsonObject();
+            playerData.addProperty("username", p.getName());
+            playerData.addProperty("uuid", generateOfflineUUID(p.getName()).toString());
+            playerData.addProperty("x", 0.0);
+            playerData.addProperty("y", 0.0);
+            playerData.addProperty("z", 0.0);
+            playerData.addProperty("world", p.getServer().getInfo().getName());
             //TODO: Seconds Online
-            playerData.put("secondsOnline", 0);
+            playerData.addProperty("secondsOnline", 0);
             playerArray.add(playerData);
         }
-        tmp.put("players", playerArray);
-        tmp.put("playersOnline", playerArray.size());
+        tmp.add("players", playerArray);
+        tmp.addProperty("playersOnline", playerArray.size());
         //Flags - Start
-        JSONArray flags = new JSONArray();
-        JSONObject betaEVOFlag = new JSONObject();
-        betaEVOFlag.put("enabled", LMPConfig.getConfigBoolean("flags.BetaEvolutions.enabled"));
-        betaEVOFlag.put("name", "BetaEvolutions");
+        JsonArray flags = new JsonArray();
+        JsonObject betaEVOFlag = new JsonObject();
+        betaEVOFlag.addProperty("enabled", LMPConfig.getConfigBoolean("flags.BetaEvolutions.enabled"));
+        betaEVOFlag.addProperty("name", "BetaEvolutions");
         flags.add(betaEVOFlag);
-        JSONObject mineOnlineFlag = new JSONObject();
-        mineOnlineFlag.put("name", "MineOnline");
-        mineOnlineFlag.put("enabled", LMPConfig.getConfigBoolean("flags.MineOnline.enabled"));
+        JsonObject mineOnlineFlag = new JsonObject();
+        mineOnlineFlag.addProperty("name", "MineOnline");
+        mineOnlineFlag.addProperty("enabled", LMPConfig.getConfigBoolean("flags.MineOnline.enabled"));
         flags.add(mineOnlineFlag);
         //Flags - End
-        tmp.put("flags", flags);
-        tmp.put("protocol", 1);
-        tmp.put("pluginName", pluginName);
-        tmp.put("pluginVersion", pdf.getVersion());
+        tmp.add("flags", flags);
+        tmp.addProperty("protocol", 1);
+        tmp.addProperty("pluginName", pluginName);
+        tmp.addProperty("pluginVersion", pdf.getVersion());
         if (serverIcon != null) {
-            tmp.put("serverIcon", serverIcon);
+            tmp.addProperty("serverIcon", serverIcon);
         }
         return tmp;
     }
@@ -290,7 +279,8 @@ public class LegacyMinecraftPinger extends JavaPlugin {
             base64String = base64String.replace("\n", "");
             return base64String;
         } catch (Exception e) {
-            log.log(Level.WARNING, "An error occurred reading the server-icon", e);
+            logger(Level.WARNING, "An error occurred reading the server-icon");
+            e.printStackTrace();
         }
         return null;
 

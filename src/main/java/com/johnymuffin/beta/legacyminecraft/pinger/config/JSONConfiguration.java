@@ -1,63 +1,49 @@
 package com.johnymuffin.beta.legacyminecraft.pinger.config;
 
-
-import org.json.simple.JSONObject;
-import org.json.simple.parser.JSONParser;
-import org.json.simple.parser.ParseException;
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParseException;
+import com.google.gson.JsonParser;
 
 import java.io.File;
-import java.io.FileReader;
-import java.io.FileWriter;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 
-public class JSONConfiguration implements ConfigurationFile {
+public class JSONConfiguration {
+    private Gson gson;
     protected File configFile;
-    protected JSONObject jsonConfig;
+    protected JsonObject jsonConfig;
 
     private boolean fileChanged = false;
 
     public JSONConfiguration(File file) {
+        this.gson = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
         this.configFile = file;
     }
 
-
-    public Object get(String key) {
-        return jsonConfig.get(key);
-    }
-
     //Getters Start
-    public Object getConfigOption(String key) {
-        return this.jsonConfig.get(key);
-    }
-
-    public Object getConfigOption(String key, Object obj) {
-        if (getConfigOption(key) == null) {
-            return obj;
-        }
-        return getConfigOption(key);
-    }
-
     public String getConfigString(String key) {
-        return String.valueOf(getConfigOption(key));
+        return jsonConfig.get(key).getAsString();
     }
 
     public Integer getConfigInteger(String key) {
-        return Integer.valueOf(getConfigString(key));
+        return jsonConfig.get(key).getAsInt();
     }
 
     public Long getConfigLong(String key) {
-        return Long.valueOf(getConfigString(key));
+        return jsonConfig.get(key).getAsLong();
     }
 
     public Double getConfigDouble(String key) {
-        return Double.valueOf(getConfigString(key));
+        return jsonConfig.get(key).getAsDouble();
     }
 
     public Boolean getConfigBoolean(String key) {
-        return Boolean.valueOf(getConfigString(key));
+        return jsonConfig.get(key).getAsBoolean();
     }
 
-    @Override
     public void writeConfigurationFile() {
         if (fileChanged) {
             saveFile();
@@ -67,35 +53,31 @@ public class JSONConfiguration implements ConfigurationFile {
     //Getters End
 
     public boolean containsKey(String key) {
-        return jsonConfig.containsKey(key);
+        return jsonConfig.has(key);
     }
 
     public void generateConfigOption(String key, Object value) {
-        if (!jsonConfig.containsKey(key)) {
-            jsonConfig.put(key, value);
+        if (!jsonConfig.has(key)) {
+            jsonConfig.add(key, gson.toJsonTree(value));
             fileChanged = true;
         }
     }
 
     public void writeConfigOption(String key, Object value) {
-        jsonConfig.put(key, value);
+        jsonConfig.add(key, gson.toJsonTree(value));
         this.fileChanged = true;
     }
 
-    @Override
     public void load() {
-
-
         //Create directory
         if (!this.configFile.exists()) {
             this.configFile.getParentFile().mkdirs();
-            jsonConfig = new JSONObject();
+            jsonConfig = new JsonObject();
             saveFile();
         } else {
             try {
-                JSONParser parser = new JSONParser();
-                jsonConfig = (JSONObject) parser.parse(new FileReader(configFile));
-            } catch (ParseException e) {
+                jsonConfig = (JsonObject) JsonParser.parseString(new String(Files.readAllBytes(configFile.toPath()), StandardCharsets.UTF_8));
+            } catch (JsonParseException e) {
                 System.out.println("Failed to load config file.");
                 throw new RuntimeException(e + ": " + e.getMessage());
             } catch (IOException e) {
@@ -106,9 +88,8 @@ public class JSONConfiguration implements ConfigurationFile {
 
 
     protected void saveFile() {
-        try (FileWriter file = new FileWriter(configFile)) {
-            file.write(jsonConfig.toJSONString());
-            file.flush();
+        try {
+            Files.write(configFile.toPath(), gson.toJson(jsonConfig).getBytes(StandardCharsets.UTF_8));
         } catch (IOException e) {
             e.printStackTrace();
         }
